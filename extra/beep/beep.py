@@ -3,12 +3,11 @@
 """
 beep.py - Make a beep sound
 
-Copyright (c) 2006-2017 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2019 sqlmap developers (http://sqlmap.org/)
 See the file 'LICENSE' for copying permission
 """
 
 import os
-import subprocess
 import sys
 import wave
 
@@ -16,11 +15,11 @@ BEEP_WAV_FILENAME = os.path.join(os.path.dirname(__file__), "beep.wav")
 
 def beep():
     try:
-        if subprocess.mswindows:
+        if sys.platform == "nt":
             _win_wav_play(BEEP_WAV_FILENAME)
         elif sys.platform == "darwin":
             _mac_beep()
-        elif sys.platform == "linux2":
+        elif sys.platform.startswith("linux"):
             _linux_wav_play(BEEP_WAV_FILENAME)
         else:
             _speaker_beep()

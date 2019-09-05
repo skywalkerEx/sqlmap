@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2017 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2019 sqlmap developers (http://sqlmap.org/)
 See the file 'LICENSE' for copying permission
 """
 
@@ -27,12 +27,12 @@ class Replication(object):
             self.connection = sqlite3.connect(dbpath)
             self.connection.isolation_level = None
             self.cursor = self.connection.cursor()
-        except sqlite3.OperationalError, ex:
+        except sqlite3.OperationalError as ex:
             errMsg = "error occurred while opening a replication "
             errMsg += "file '%s' ('%s')" % (self.filepath, getSafeExString(ex))
             raise SqlmapConnectionException(errMsg)
 
-    class DataType:
+    class DataType(object):
         """
         Using this class we define auxiliary objects
         used for representing sqlite data types.
@@ -47,7 +47,7 @@ class Replication(object):
         def __repr__(self):
             return "<DataType: %s>" % self
 
-    class Table:
+    class Table(object):
         """
         This class defines methods used to manipulate table objects.
         """
@@ -63,7 +63,7 @@ class Replication(object):
                         self.execute('CREATE TABLE "%s" (%s)' % (self.name, ','.join('"%s" %s' % (unsafeSQLIdentificatorNaming(colname), coltype) for colname, coltype in self.columns)))
                     else:
                         self.execute('CREATE TABLE "%s" (%s)' % (self.name, ','.join('"%s"' % unsafeSQLIdentificatorNaming(colname) for colname in self.columns)))
-                except Exception, ex:
+                except Exception as ex:
                     errMsg = "problem occurred ('%s') while initializing the sqlite database " % getSafeExString(ex, UNICODE_ENCODING)
                     errMsg += "located at '%s'" % self.parent.dbpath
                     raise SqlmapGenericException(errMsg)
@@ -79,10 +79,10 @@ class Replication(object):
                 errMsg = "wrong number of columns used in replicating insert"
                 raise SqlmapValueException(errMsg)
 
-        def execute(self, sql, parameters=[]):
+        def execute(self, sql, parameters=None):
             try:
-                self.parent.cursor.execute(sql, parameters)
-            except sqlite3.OperationalError, ex:
+                self.parent.cursor.execute(sql, parameters or [])
+            except sqlite3.OperationalError as ex:
                 errMsg = "problem occurred ('%s') while accessing sqlite database " % getSafeExString(ex, UNICODE_ENCODING)
                 errMsg += "located at '%s'. Please make sure that " % self.parent.dbpath
                 errMsg += "it's not used by some other program"

@@ -1,10 +1,13 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2017 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2019 sqlmap developers (http://sqlmap.org/)
 See the file 'LICENSE' for copying permission
 """
 
+from __future__ import print_function
+
+import binascii
 import os
 import re
 import socket
@@ -76,12 +79,12 @@ class DNSServer(object):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("", 53))
-            s.send("6509012000010000000000010377777706676f6f676c6503636f6d00000100010000291000000000000000".decode("hex"))  # A www.google.com
+            s.send(binascii.unhexlify("6509012000010000000000010377777706676f6f676c6503636f6d00000100010000291000000000000000"))  # A www.google.com
             response = s.recv(512)
         except:
             pass
         finally:
-            if response and "google" in response:
+            if response and b"google" in response:
                 raise socket.error("another DNS service already running on *:53")
 
     def pop(self, prefix=None, suffix=None):
@@ -145,13 +148,13 @@ if __name__ == "__main__":
                 if _ is None:
                     break
                 else:
-                    print "[i] %s" % _
+                    print("[i] %s" % _)
 
             time.sleep(1)
 
-    except socket.error, ex:
+    except socket.error as ex:
         if 'Permission' in str(ex):
-            print "[x] Please run with sudo/Administrator privileges"
+            print("[x] Please run with sudo/Administrator privileges")
         else:
             raise
     except KeyboardInterrupt:

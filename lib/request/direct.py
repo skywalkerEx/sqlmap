@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2017 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2019 sqlmap developers (http://sqlmap.org/)
 See the file 'LICENSE' for copying permission
 """
 
@@ -13,10 +13,10 @@ from lib.core.common import Backend
 from lib.core.common import calculateDeltaSeconds
 from lib.core.common import extractExpectedValue
 from lib.core.common import getCurrentThreadData
-from lib.core.common import getUnicode
 from lib.core.common import hashDBRetrieve
 from lib.core.common import hashDBWrite
 from lib.core.common import isListLike
+from lib.core.convert import getUnicode
 from lib.core.data import conf
 from lib.core.data import kb
 from lib.core.data import logger
@@ -53,7 +53,7 @@ def direct(query, content=True):
 
     if not select and "EXEC " not in query.upper():
         timeout(func=conf.dbmsConnector.execute, args=(query,), duration=conf.timeout, default=None)
-    elif not (output and "sqlmapoutput" not in query and "sqlmapfile" not in query):
+    elif not (output and ("%soutput" % conf.tablePrefix) not in query and ("%sfile" % conf.tablePrefix) not in query):
         output, state = timeout(func=conf.dbmsConnector.select, args=(query,), duration=conf.timeout, default=None)
         if state == TIMEOUT_STATE.NORMAL:
             hashDBWrite(query, output, True)

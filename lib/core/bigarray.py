@@ -1,21 +1,22 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2017 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2019 sqlmap developers (http://sqlmap.org/)
 See the file 'LICENSE' for copying permission
 """
 
 try:
-   import cPickle as pickle
+    import cPickle as pickle
 except:
-   import pickle
+    import pickle
 
+import bz2
 import itertools
 import os
 import sys
 import tempfile
-import zlib
 
+from lib.core.compat import xrange
 from lib.core.enums import MKSTEMP_PREFIX
 from lib.core.exception import SqlmapSystemException
 from lib.core.settings import BIGARRAY_CHUNK_SIZE
@@ -33,7 +34,7 @@ def _size_of(object_):
     if isinstance(object_, dict):
         retval += sum(_size_of(_) for _ in itertools.chain.from_iterable(object_.items()))
     elif hasattr(object_, "__iter__"):
-        retval += sum(_size_of(_) for _ in object_)
+        retval += sum(_size_of(_) for _ in object_ if _ != object_)
 
     return retval
 
@@ -50,23 +51,28 @@ class Cache(object):
 class BigArray(list):
     """
     List-like class used for storing large amounts of data (disk cached)
+
+    >>> _ = BigArray(xrange(100000))
+    >>> _[20] = 0
+    >>> _[100]
+    100
     """
 
-    def __init__(self, items=[]):
+    def __init__(self, items=None):
         self.chunks = [[]]
-        self.chunk_length = sys.maxint
+        self.chunk_length = sys.maxsize
         self.cache = None
         self.filenames = set()
         self._os_remove = os.remove
         self._size_counter = 0
 
-        for item in items:
+        for item in (items or []):
             self.append(item)
 
     def append(self, value):
         self.chunks[-1].append(value)
 
-        if self.chunk_length == sys.maxint:
+        if self.chunk_length == sys.maxsize:
             self._size_counter += _size_of(value)
             if self._size_counter >= BIGARRAY_CHUNK_SIZE:
                 self.chunk_length = len(self.chunks[-1])
@@ -86,11 +92,11 @@ class BigArray(list):
             self.chunks.pop()
             try:
                 with open(self.chunks[-1], "rb") as f:
-                    self.chunks[-1] = pickle.loads(zlib.decompress(f.read()))
-            except IOError, ex:
+                    self.chunks[-1] = pickle.loads(bz2.decompress(f.read()))
+            except IOError as ex:
                 errMsg = "exception occurred while retrieving data "
-                errMsg += "from a temporary file ('%s')" % ex.message
-                raise SqlmapSystemException, errMsg
+                errMsg += "from a temporary file ('%s')" % ex
+                raise SqlmapSystemException(errMsg)
 
         return self.chunks[-1].pop()
 
@@ -107,15 +113,15 @@ class BigArray(list):
             self.filenames.add(filename)
             os.close(handle)
             with open(filename, "w+b") as f:
-                f.write(zlib.compress(pickle.dumps(chunk, pickle.HIGHEST_PROTOCOL), BIGARRAY_COMPRESS_LEVEL))
+                f.write(bz2.compress(pickle.dumps(chunk, pickle.HIGHEST_PROTOCOL), BIGARRAY_COMPRESS_LEVEL))
             return filename
-        except (OSError, IOError), ex:
+        except (OSError, IOError) as ex:
             errMsg = "exception occurred while storing data "
-            errMsg += "to a temporary file ('%s'). Please " % ex.message
+            errMsg += "to a temporary file ('%s'). Please " % ex
             errMsg += "make sure that there is enough disk space left. If problem persists, "
             errMsg += "try to set environment variable 'TEMP' to a location "
             errMsg += "writeable by the current user"
-            raise SqlmapSystemException, errMsg
+            raise SqlmapSystemException(errMsg)
 
     def _checkcache(self, index):
         if (self.cache and self.cache.index != index and self.cache.dirty):
@@ -125,11 +131,11 @@ class BigArray(list):
         if not (self.cache and self.cache.index == index):
             try:
                 with open(self.chunks[index], "rb") as f:
-                    self.cache = Cache(index, pickle.loads(zlib.decompress(f.read())), False)
-            except IOError, ex:
+                    self.cache = Cache(index, pickle.loads(bz2.decompress(f.read())), False)
+            except Exception as ex:
                 errMsg = "exception occurred while retrieving data "
-                errMsg += "from a temporary file ('%s')" % ex.message
-                raise SqlmapSystemException, errMsg
+                errMsg += "from a temporary file ('%s')" % ex
+                raise SqlmapSystemException(errMsg)
 
     def __getstate__(self):
         return self.chunks, self.filenames
@@ -138,17 +144,11 @@ class BigArray(list):
         self.__init__()
         self.chunks, self.filenames = state
 
-    def __getslice__(self, i, j):
-        i = max(0, len(self) + i if i < 0 else i)
-        j = min(len(self), len(self) + j if j < 0 else j)
-
-        return BigArray(self[_] for _ in xrange(i, j))
-
     def __getitem__(self, y):
         if y < 0:
             y += len(self)
 
-        index = y / self.chunk_length
+        index = y // self.chunk_length
         offset = y % self.chunk_length
         chunk = self.chunks[index]
 
@@ -159,7 +159,7 @@ class BigArray(list):
             return self.cache.data[offset]
 
     def __setitem__(self, y, value):
-        index = y / self.chunk_length
+        index = y // self.chunk_length
         offset = y % self.chunk_length
         chunk = self.chunks[index]
 

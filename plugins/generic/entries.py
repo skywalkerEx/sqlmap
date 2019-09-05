@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2017 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2019 sqlmap developers (http://sqlmap.org/)
 See the file 'LICENSE' for copying permission
 """
 
@@ -13,7 +13,6 @@ from lib.core.common import Backend
 from lib.core.common import clearConsoleLine
 from lib.core.common import getLimitRange
 from lib.core.common import getSafeExString
-from lib.core.common import getUnicode
 from lib.core.common import isInferenceAvailable
 from lib.core.common import isListLike
 from lib.core.common import isNoneValue
@@ -22,8 +21,11 @@ from lib.core.common import isTechniqueAvailable
 from lib.core.common import prioritySortColumns
 from lib.core.common import readInput
 from lib.core.common import safeSQLIdentificatorNaming
+from lib.core.common import singleTimeLogMessage
+from lib.core.common import singleTimeWarnMessage
 from lib.core.common import unArrayizeValue
 from lib.core.common import unsafeSQLIdentificatorNaming
+from lib.core.convert import getUnicode
 from lib.core.data import conf
 from lib.core.data import kb
 from lib.core.data import logger
@@ -43,8 +45,10 @@ from lib.core.settings import NULL
 from lib.request import inject
 from lib.utils.hash import attackDumpedTable
 from lib.utils.pivotdumptable import pivotDumpTable
+from thirdparty import six
+from thirdparty.six.moves import zip as _zip
 
-class Entries:
+class Entries(object):
     """
     This class defines entries' enumeration functionalities for plugins.
     """
@@ -65,18 +69,23 @@ class Entries:
             conf.db = self.getCurrentDb()
 
         elif conf.db is not None:
-            if Backend.getIdentifiedDbms() in (DBMS.ORACLE, DBMS.DB2, DBMS.HSQLDB):
+            if Backend.getIdentifiedDbms() in (DBMS.ORACLE, DBMS.DB2, DBMS.HSQLDB, DBMS.H2):
                 conf.db = conf.db.upper()
 
-            if  ',' in conf.db:
+            if ',' in conf.db:
                 errMsg = "only one database name is allowed when enumerating "
                 errMsg += "the tables' columns"
                 raise SqlmapMissingMandatoryOptionException(errMsg)
 
+            if conf.exclude and conf.db in conf.exclude.split(','):
+                infoMsg = "skipping database '%s'" % unsafeSQLIdentificatorNaming(conf.db)
+                singleTimeLogMessage(infoMsg)
+                return
+
         conf.db = safeSQLIdentificatorNaming(conf.db)
 
         if conf.tbl:
-            if Backend.getIdentifiedDbms() in (DBMS.ORACLE, DBMS.DB2, DBMS.HSQLDB):
+            if Backend.getIdentifiedDbms() in (DBMS.ORACLE, DBMS.DB2, DBMS.HSQLDB, DBMS.H2):
                 conf.tbl = conf.tbl.upper()
 
             tblList = conf.tbl.split(',')
@@ -84,9 +93,9 @@ class Entries:
             self.getTables()
 
             if len(kb.data.cachedTables) > 0:
-                tblList = kb.data.cachedTables.values()
+                tblList = list(six.itervalues(kb.data.cachedTables))
 
-                if isinstance(tblList[0], (set, tuple, list)):
+                if tblList and isListLike(tblList[0]):
                     tblList = tblList[0]
             elif not conf.search:
                 errMsg = "unable to retrieve the tables "
@@ -99,6 +108,14 @@ class Entries:
             tblList[tblList.index(tbl)] = safeSQLIdentificatorNaming(tbl, True)
 
         for tbl in tblList:
+            if kb.dumpKeyboardInterrupt:
+                break
+
+            if conf.exclude and tbl in conf.exclude.split(','):
+                infoMsg = "skipping table '%s'" % unsafeSQLIdentificatorNaming(tbl)
+                singleTimeLogMessage(infoMsg)
+                continue
+
             conf.tbl = tbl
             kb.data.dumpedTable = {}
 
@@ -114,10 +131,7 @@ class Entries:
                 else:
                     kb.dumpTable = "%s.%s" % (conf.db, tbl)
 
-                if not safeSQLIdentificatorNaming(conf.db) in kb.data.cachedColumns \
-                   or safeSQLIdentificatorNaming(tbl, True) not in \
-                   kb.data.cachedColumns[safeSQLIdentificatorNaming(conf.db)] \
-                   or not kb.data.cachedColumns[safeSQLIdentificatorNaming(conf.db)][safeSQLIdentificatorNaming(tbl, True)]:
+                if safeSQLIdentificatorNaming(conf.db) not in kb.data.cachedColumns or safeSQLIdentificatorNaming(tbl, True) not in kb.data.cachedColumns[safeSQLIdentificatorNaming(conf.db)] or not kb.data.cachedColumns[safeSQLIdentificatorNaming(conf.db)][safeSQLIdentificatorNaming(tbl, True)]:
                     warnMsg = "unable to enumerate the columns for table "
                     warnMsg += "'%s' in database" % unsafeSQLIdentificatorNaming(tbl)
                     warnMsg += " '%s'" % unsafeSQLIdentificatorNaming(conf.db)
@@ -127,10 +141,10 @@ class Entries:
                     continue
 
                 columns = kb.data.cachedColumns[safeSQLIdentificatorNaming(conf.db)][safeSQLIdentificatorNaming(tbl, True)]
-                colList = sorted(filter(None, columns.keys()))
+                colList = sorted(column for column in columns if column)
 
-                if conf.excludeCol:
-                    colList = [_ for _ in colList if _ not in conf.excludeCol.split(',')]
+                if conf.exclude:
+                    colList = [_ for _ in colList if _ not in conf.exclude.split(',')]
 
                 if not colList:
                     warnMsg = "skipping table '%s'" % unsafeSQLIdentificatorNaming(tbl)
@@ -170,7 +184,11 @@ class Entries:
                         if not (isTechniqueAvailable(PAYLOAD.TECHNIQUE.UNION) and kb.injection.data[PAYLOAD.TECHNIQUE.UNION].where == PAYLOAD.WHERE.ORIGINAL):
                             table = "%s.%s" % (conf.db, tbl)
 
-                            if Backend.isDbms(DBMS.MSSQL):
+                            if Backend.isDbms(DBMS.MSSQL) and not conf.forcePivoting:
+                                warnMsg = "in case of table dumping problems (e.g. column entry order) "
+                                warnMsg += "you are advised to rerun with '--force-pivoting'"
+                                singleTimeWarnMessage(warnMsg)
+
                                 query = rootQuery.blind.count % table
                                 query = agent.whereQuery(query)
 
@@ -187,6 +205,9 @@ class Entries:
                                                 value = inject.getValue(query, blind=False, time=False, dump=True) or ""
                                                 row.append(value)
 
+                                            if not entries and isNoneValue(row):
+                                                break
+
                                             entries.append(row)
 
                                     except KeyboardInterrupt:
@@ -195,7 +216,7 @@ class Entries:
                                         warnMsg = "Ctrl+C detected in dumping phase"
                                         logger.warn(warnMsg)
 
-                            if not entries and not kb.dumpKeyboardInterrupt:
+                            if isNoneValue(entries) and not kb.dumpKeyboardInterrupt:
                                 try:
                                     retVal = pivotDumpTable(table, colList, blind=False)
                                 except KeyboardInterrupt:
@@ -207,10 +228,10 @@ class Entries:
 
                                 if retVal:
                                     entries, _ = retVal
-                                    entries = zip(*[entries[colName] for colName in colList])
+                                    entries = BigArray(_zip(*[entries[colName] for colName in colList]))
                         else:
                             query = rootQuery.inband.query % (colString, conf.db, tbl)
-                    elif Backend.getIdentifiedDbms() in (DBMS.MYSQL, DBMS.PGSQL, DBMS.HSQLDB):
+                    elif Backend.getIdentifiedDbms() in (DBMS.MYSQL, DBMS.PGSQL, DBMS.HSQLDB, DBMS.H2):
                         query = rootQuery.inband.query % (colString, conf.db, tbl, prioritySortColumns(colList)[0])
                     else:
                         query = rootQuery.inband.query % (colString, conf.db, tbl)
@@ -228,7 +249,7 @@ class Entries:
                             logger.warn(warnMsg)
 
                     if not isNoneValue(entries):
-                        if isinstance(entries, basestring):
+                        if isinstance(entries, six.string_types):
                             entries = [entries]
                         elif not isListLike(entries):
                             entries = []
@@ -243,7 +264,7 @@ class Entries:
                                 if entry is None or len(entry) == 0:
                                     continue
 
-                                if isinstance(entry, basestring):
+                                if isinstance(entry, six.string_types):
                                     colEntry = entry
                                 else:
                                     colEntry = unArrayizeValue(entry[index]) if index < len(entry) else u''
@@ -313,7 +334,11 @@ class Entries:
                         elif Backend.isDbms(DBMS.INFORMIX):
                             table = "%s:%s" % (conf.db, tbl)
 
-                        if Backend.isDbms(DBMS.MSSQL):
+                        if Backend.isDbms(DBMS.MSSQL) and not conf.forcePivoting:
+                            warnMsg = "in case of table dumping problems (e.g. column entry order) "
+                            warnMsg += "you are advised to rerun with '--force-pivoting'"
+                            singleTimeWarnMessage(warnMsg)
+
                             try:
                                 indexRange = getLimitRange(count, plusOne=True)
 
@@ -379,7 +404,7 @@ class Entries:
                                     if column not in entries:
                                         entries[column] = BigArray()
 
-                                    if Backend.getIdentifiedDbms() in (DBMS.MYSQL, DBMS.PGSQL, DBMS.HSQLDB):
+                                    if Backend.getIdentifiedDbms() in (DBMS.MYSQL, DBMS.PGSQL, DBMS.HSQLDB, DBMS.H2):
                                         query = rootQuery.blind.query % (agent.preprocessField(tbl, column), conf.db, conf.tbl, sorted(colList, key=len)[0], index)
                                     elif Backend.getIdentifiedDbms() in (DBMS.ORACLE, DBMS.DB2):
                                         query = rootQuery.blind.query % (agent.preprocessField(tbl, column), tbl.upper() if not conf.db else ("%s.%s" % (conf.db.upper(), tbl.upper())), index)
@@ -424,13 +449,13 @@ class Entries:
                                                         "db": safeSQLIdentificatorNaming(conf.db)}
                     try:
                         attackDumpedTable()
-                    except (IOError, OSError), ex:
+                    except (IOError, OSError) as ex:
                         errMsg = "an error occurred while attacking "
                         errMsg += "table dump ('%s')" % getSafeExString(ex)
                         logger.critical(errMsg)
                     conf.dumper.dbTableValues(kb.data.dumpedTable)
 
-            except SqlmapConnectionException, ex:
+            except SqlmapConnectionException as ex:
                 errMsg = "connection exception detected in dumping phase "
                 errMsg += "('%s')" % getSafeExString(ex)
                 logger.critical(errMsg)
@@ -459,12 +484,17 @@ class Entries:
 
         if kb.data.cachedTables:
             if isinstance(kb.data.cachedTables, list):
-                kb.data.cachedTables = { None: kb.data.cachedTables }
+                kb.data.cachedTables = {None: kb.data.cachedTables}
 
             for db, tables in kb.data.cachedTables.items():
                 conf.db = db
 
                 for table in tables:
+                    if conf.exclude and table in conf.exclude.split(','):
+                        infoMsg = "skipping table '%s'" % unsafeSQLIdentificatorNaming(table)
+                        logger.info(infoMsg)
+                        continue
+
                     try:
                         conf.tbl = table
                         kb.data.cachedColumns = {}
@@ -492,7 +522,7 @@ class Entries:
         choice = readInput(message, default='a')
 
         if not choice or choice in ('a', 'A'):
-            dumpFromDbs = dbs.keys()
+            dumpFromDbs = list(dbs.keys())
         elif choice in ('q', 'Q'):
             return
         else:
@@ -528,10 +558,10 @@ class Entries:
                     continue
 
                 conf.tbl = table
-                colList = filter(None, sorted(columns))
+                colList = [_ for _ in columns if _]
 
-                if conf.excludeCol:
-                    colList = [_ for _ in colList if _ not in conf.excludeCol.split(',')]
+                if conf.exclude:
+                    colList = [_ for _ in colList if _ not in conf.exclude.split(',')]
 
                 conf.col = ','.join(colList)
                 kb.data.cachedColumns = {}
@@ -559,7 +589,7 @@ class Entries:
         choice = readInput(message, default='a')
 
         if not choice or choice.lower() == 'a':
-            dumpFromDbs = tables.keys()
+            dumpFromDbs = list(tables.keys())
         elif choice.lower() == 'q':
             return
         else:

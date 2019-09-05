@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2017 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2019 sqlmap developers (http://sqlmap.org/)
 See the file 'LICENSE' for copying permission
 """
+
+from __future__ import print_function
 
 import re
 import sys
@@ -11,8 +13,8 @@ import sys
 from lib.core.common import Backend
 from lib.core.common import dataToStdout
 from lib.core.common import getSQLSnippet
-from lib.core.common import getUnicode
 from lib.core.common import isStackingAvailable
+from lib.core.convert import getUnicode
 from lib.core.data import conf
 from lib.core.data import logger
 from lib.core.dicts import SQL_STATEMENTS
@@ -22,8 +24,9 @@ from lib.core.settings import NULL
 from lib.core.settings import PARAMETER_SPLITTING_REGEX
 from lib.core.shell import autoCompletion
 from lib.request import inject
+from thirdparty.six.moves import input as _input
 
-class Custom:
+class Custom(object):
     """
     This class defines custom enumeration functionalities for plugins.
     """
@@ -51,11 +54,11 @@ class Custom:
 
                 return output
             elif not isStackingAvailable() and not conf.direct:
-                    warnMsg = "execution of non-query SQL statements is only "
-                    warnMsg += "available when stacked queries are supported"
-                    logger.warn(warnMsg)
+                warnMsg = "execution of non-query SQL statements is only "
+                warnMsg += "available when stacked queries are supported"
+                logger.warn(warnMsg)
 
-                    return None
+                return None
             else:
                 if sqlType:
                     debugMsg = "executing %s query: '%s'" % (sqlType if sqlType is not None else "SQL", query)
@@ -70,7 +73,7 @@ class Custom:
 
                 output = NULL
 
-        except SqlmapNoneDataException, ex:
+        except SqlmapNoneDataException as ex:
             logger.warn(ex)
 
         return output
@@ -86,14 +89,15 @@ class Custom:
             query = None
 
             try:
-                query = raw_input("sql-shell> ")
+                query = _input("sql-shell> ")
                 query = getUnicode(query, encoding=sys.stdin.encoding)
+                query = query.strip("; ")
             except KeyboardInterrupt:
-                print
+                print()
                 errMsg = "user aborted"
                 logger.error(errMsg)
             except EOFError:
-                print
+                print()
                 errMsg = "exit"
                 logger.error(errMsg)
                 break
@@ -107,7 +111,7 @@ class Custom:
             output = self.sqlQuery(query)
 
             if output and output != "Quit":
-                conf.dumper.query(query, output)
+                conf.dumper.sqlQuery(query, output)
 
             elif not output:
                 pass
@@ -127,10 +131,10 @@ class Custom:
 
             snippet = getSQLSnippet(Backend.getDbms(), filename)
 
-            if snippet and all(query.strip().upper().startswith("SELECT") for query in filter(None, snippet.split(';' if ';' in snippet else '\n'))):
-                for query in filter(None, snippet.split(';' if ';' in snippet else '\n')):
+            if snippet and all(query.strip().upper().startswith("SELECT") for query in (_ for _ in snippet.split(';' if ';' in snippet else '\n') if _)):
+                for query in (_ for _ in snippet.split(';' if ';' in snippet else '\n') if _):
                     query = query.strip()
                     if query:
-                        conf.dumper.query(query, self.sqlQuery(query))
+                        conf.dumper.sqlQuery(query, self.sqlQuery(query))
             else:
-                conf.dumper.query(snippet, self.sqlQuery(snippet))
+                conf.dumper.sqlQuery(snippet, self.sqlQuery(snippet))

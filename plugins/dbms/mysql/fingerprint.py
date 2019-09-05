@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2017 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2019 sqlmap developers (http://sqlmap.org/)
 See the file 'LICENSE' for copying permission
 """
 
@@ -9,9 +9,10 @@ import re
 
 from lib.core.common import Backend
 from lib.core.common import Format
-from lib.core.common import getUnicode
 from lib.core.common import hashDBRetrieve
 from lib.core.common import hashDBWrite
+from lib.core.compat import xrange
+from lib.core.convert import getUnicode
 from lib.core.data import conf
 from lib.core.data import kb
 from lib.core.data import logger
@@ -41,18 +42,19 @@ class Fingerprint(GenericFingerprint):
 
         # Reference: https://downloads.mysql.com/archives/community/
         versions = (
-                     (32200, 32235),    # MySQL 3.22
-                     (32300, 32359),    # MySQL 3.23
-                     (40000, 40032),    # MySQL 4.0
-                     (40100, 40131),    # MySQL 4.1
-                     (50000, 50096),    # MySQL 5.0
-                     (50100, 50172),    # MySQL 5.1
-                     (50400, 50404),    # MySQL 5.4
-                     (50500, 50554),    # MySQL 5.5
-                     (50600, 50635),    # MySQL 5.6
-                     (50700, 50717),    # MySQL 5.7
-                     (60000, 60014),    # MySQL 6.0
-                   )
+            (32200, 32235),  # MySQL 3.22
+            (32300, 32359),  # MySQL 3.23
+            (40000, 40032),  # MySQL 4.0
+            (40100, 40131),  # MySQL 4.1
+            (50000, 50097),  # MySQL 5.0
+            (50100, 50174),  # MySQL 5.1
+            (50400, 50404),  # MySQL 5.4
+            (50500, 50562),  # MySQL 5.5
+            (50600, 50646),  # MySQL 5.6
+            (50700, 50726),  # MySQL 5.7
+            (60000, 60014),  # MySQL 6.0
+            (80000, 80015),  # MySQL 8.0
+        )
 
         index = -1
         for i in xrange(len(versions)):
@@ -123,13 +125,14 @@ class Fingerprint(GenericFingerprint):
             value += "\n%scomment injection fingerprint: %s" % (blank, comVer)
 
         if kb.bannerFp:
-            banVer = kb.bannerFp["dbmsVersion"] if "dbmsVersion" in kb.bannerFp else None
+            banVer = kb.bannerFp.get("dbmsVersion")
 
-            if banVer and re.search(r"-log$", kb.data.banner):
-                banVer += ", logging enabled"
+            if banVer:
+                if banVer and re.search(r"-log$", kb.data.banner or ""):
+                    banVer += ", logging enabled"
 
-            banVer = Format.getDbms([banVer] if banVer else None)
-            value += "\n%sbanner parsing fingerprint: %s" % (blank, banVer)
+                banVer = Format.getDbms([banVer])
+                value += "\n%sbanner parsing fingerprint: %s" % (blank, banVer)
 
         htmlErrorFp = Format.getErrorParsedDBMSes()
 
@@ -182,8 +185,15 @@ class Fingerprint(GenericFingerprint):
             # reading information_schema on some platforms is causing annoying timeout exits
             # Reference: http://bugs.mysql.com/bug.php?id=15855
 
+            # Determine if it is MySQL >= 8.0.0
+            if inject.checkBooleanExpression("ISNULL(JSON_STORAGE_FREE(NULL))"):
+                kb.data.has_information_schema = True
+                Backend.setVersion(">= 8.0.0")
+                setDbms("%s 8" % DBMS.MYSQL)
+                self.getBanner()
+
             # Determine if it is MySQL >= 5.0.0
-            if inject.checkBooleanExpression("ISNULL(TIMESTAMPADD(MINUTE,[RANDNUM],NULL))"):
+            elif inject.checkBooleanExpression("ISNULL(TIMESTAMPADD(MINUTE,[RANDNUM],NULL))"):
                 kb.data.has_information_schema = True
                 Backend.setVersion(">= 5.0.0")
                 setDbms("%s 5" % DBMS.MYSQL)
@@ -195,9 +205,17 @@ class Fingerprint(GenericFingerprint):
                 infoMsg = "actively fingerprinting %s" % DBMS.MYSQL
                 logger.info(infoMsg)
 
-                # Check if it is MySQL >= 5.5.0
-                if inject.checkBooleanExpression("TO_SECONDS(950501)>0"):
-                    Backend.setVersion(">= 5.5.0")
+                # Check if it is MySQL >= 5.7
+                if inject.checkBooleanExpression("ISNULL(JSON_QUOTE(NULL))"):
+                    Backend.setVersion(">= 5.7")
+
+                # Check if it is MySQL >= 5.6
+                elif inject.checkBooleanExpression("ISNULL(VALIDATE_PASSWORD_STRENGTH(NULL))"):
+                    Backend.setVersion(">= 5.6")
+
+                # Check if it is MySQL >= 5.5
+                elif inject.checkBooleanExpression("TO_SECONDS(950501)>0"):
+                    Backend.setVersion(">= 5.5")
 
                 # Check if it is MySQL >= 5.1.2 and < 5.5.0
                 elif inject.checkBooleanExpression("@@table_open_cache=@@table_open_cache"):

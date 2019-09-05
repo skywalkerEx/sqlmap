@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2017 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2019 sqlmap developers (http://sqlmap.org/)
 See the file 'LICENSE' for copying permission
 """
 
@@ -19,10 +19,10 @@ from lib.core.common import calculateDeltaSeconds
 from lib.core.common import clearConsoleLine
 from lib.core.common import dataToStdout
 from lib.core.common import extractRegexResult
+from lib.core.common import firstNotNone
 from lib.core.common import flattenValue
 from lib.core.common import getConsoleWidth
 from lib.core.common import getPartRun
-from lib.core.common import getUnicode
 from lib.core.common import hashDBRetrieve
 from lib.core.common import hashDBWrite
 from lib.core.common import incrementCounter
@@ -33,17 +33,23 @@ from lib.core.common import isNumPosStrValue
 from lib.core.common import listToStrValue
 from lib.core.common import parseUnionPage
 from lib.core.common import removeReflectiveValues
+from lib.core.common import safeStringFormat
 from lib.core.common import singleTimeDebugMessage
 from lib.core.common import singleTimeWarnMessage
 from lib.core.common import unArrayizeValue
 from lib.core.common import wasLastResponseDBMSError
-from lib.core.convert import htmlunescape
+from lib.core.compat import xrange
+from lib.core.convert import decodeBase64
+from lib.core.convert import getBytes
+from lib.core.convert import getUnicode
+from lib.core.convert import htmlUnescape
 from lib.core.data import conf
 from lib.core.data import kb
 from lib.core.data import logger
 from lib.core.data import queries
 from lib.core.dicts import FROM_DUMMY_TABLE
 from lib.core.enums import DBMS
+from lib.core.enums import HTTP_HEADER
 from lib.core.enums import PAYLOAD
 from lib.core.exception import SqlmapDataException
 from lib.core.exception import SqlmapSyntaxException
@@ -51,13 +57,13 @@ from lib.core.settings import MAX_BUFFERED_PARTIAL_UNION_LENGTH
 from lib.core.settings import NULL
 from lib.core.settings import SQL_SCALAR_REGEX
 from lib.core.settings import TURN_OFF_RESUME_INFO_LIMIT
-from lib.core.settings import UNICODE_ENCODING
 from lib.core.threads import getCurrentThreadData
 from lib.core.threads import runThreads
 from lib.core.unescaper import unescaper
 from lib.request.connect import Connect as Request
 from lib.utils.progress import ProgressBar
-from thirdparty.odict.odict import OrderedDict
+from thirdparty import six
+from thirdparty.odict import OrderedDict
 
 def _oneShotUnionUse(expression, unpack=True, limited=False):
     retVal = hashDBRetrieve("%s%s" % (conf.hexConvert or False, expression), checkConf=True)  # as UNION data is stored raw unconverted
@@ -89,11 +95,10 @@ def _oneShotUnionUse(expression, unpack=True, limited=False):
             # Parse the returned page to get the exact UNION-based
             # SQL injection output
             def _(regex):
-                return reduce(lambda x, y: x if x is not None else y, (\
-                        extractRegexResult(regex, removeReflectiveValues(page, payload), re.DOTALL | re.IGNORECASE), \
-                        extractRegexResult(regex, removeReflectiveValues(listToStrValue(headers.headers \
-                        if headers else None), payload, True), re.DOTALL | re.IGNORECASE)), \
-                        None)
+                return firstNotNone(
+                    extractRegexResult(regex, removeReflectiveValues(page, payload), re.DOTALL | re.IGNORECASE),
+                    extractRegexResult(regex, removeReflectiveValues(listToStrValue((_ for _ in headers.headers if not _.startswith(HTTP_HEADER.URI)) if headers else None), payload, True), re.DOTALL | re.IGNORECASE)
+                )
 
             # Automatically patching last char trimming cases
             if kb.chars.stop not in (page or "") and kb.chars.stop[:-1] in (page or ""):
@@ -106,7 +111,7 @@ def _oneShotUnionUse(expression, unpack=True, limited=False):
             output = extractRegexResult(r"(?P<result>(<row.+?/>)+)", page)
             if output:
                 try:
-                    root = xml.etree.ElementTree.fromstring("<root>%s</root>" % output.encode(UNICODE_ENCODING))
+                    root = xml.etree.ElementTree.fromstring(safeStringFormat("<root>%s</root>", getBytes(output)))
                     retVal = ""
                     for column in kb.dumpColumns:
                         base64 = True
@@ -117,14 +122,14 @@ def _oneShotUnionUse(expression, unpack=True, limited=False):
                                 break
 
                             try:
-                                value.decode("base64")
+                                decodeBase64(value)
                             except binascii.Error:
                                 base64 = False
                                 break
 
                         if base64:
                             for child in root:
-                                child.attrib[column] = child.attrib.get(column, "").decode("base64") or NULL
+                                child.attrib[column] = decodeBase64(child.attrib.get(column, ""), binary=False) or NULL
 
                     for child in root:
                         row = []
@@ -142,7 +147,7 @@ def _oneShotUnionUse(expression, unpack=True, limited=False):
 
             # Special case when DBMS is Microsoft SQL Server and error message is used as a result of UNION injection
             if Backend.isDbms(DBMS.MSSQL) and wasLastResponseDBMSError():
-                retVal = htmlunescape(retVal).replace("<br>", "\n")
+                retVal = htmlUnescape(retVal).replace("<br>", "\n")
 
             hashDBWrite("%s%s" % (conf.hexConvert or False, expression), retVal)
 
@@ -162,7 +167,7 @@ def _oneShotUnionUse(expression, unpack=True, limited=False):
 
 def configUnion(char=None, columns=None):
     def _configUnionChar(char):
-        if not isinstance(char, basestring):
+        if not isinstance(char, six.string_types):
             return
 
         kb.uChar = char
@@ -171,7 +176,7 @@ def configUnion(char=None, columns=None):
             kb.uChar = char.replace("[CHAR]", conf.uChar if conf.uChar.isdigit() else "'%s'" % conf.uChar.strip("'"))
 
     def _configUnionCols(columns):
-        if not isinstance(columns, basestring):
+        if not isinstance(columns, six.string_types):
             return
 
         columns = columns.replace(" ", "")
@@ -236,13 +241,7 @@ def unionUse(expression, unpack=True, dump=False):
     # SQL limiting the query output one entry at a time
     # NOTE: we assume that only queries that get data from a table can
     # return multiple entries
-    if value is None and (kb.injection.data[PAYLOAD.TECHNIQUE.UNION].where == PAYLOAD.WHERE.NEGATIVE or \
-       kb.forcePartialUnion or \
-       (dump and (conf.limitStart or conf.limitStop)) or "LIMIT " in expression.upper()) and \
-       " FROM " in expression.upper() and ((Backend.getIdentifiedDbms() \
-       not in FROM_DUMMY_TABLE) or (Backend.getIdentifiedDbms() in FROM_DUMMY_TABLE \
-       and not expression.upper().endswith(FROM_DUMMY_TABLE[Backend.getIdentifiedDbms()]))) \
-       and not re.search(SQL_SCALAR_REGEX, expression, re.I):
+    if value is None and (kb.injection.data[PAYLOAD.TECHNIQUE.UNION].where == PAYLOAD.WHERE.NEGATIVE or kb.forcePartialUnion or conf.forcePartial or (dump and (conf.limitStart or conf.limitStop)) or "LIMIT " in expression.upper()) and " FROM " in expression.upper() and ((Backend.getIdentifiedDbms() not in FROM_DUMMY_TABLE) or (Backend.getIdentifiedDbms() in FROM_DUMMY_TABLE and not expression.upper().endswith(FROM_DUMMY_TABLE[Backend.getIdentifiedDbms()]))) and not re.search(SQL_SCALAR_REGEX, expression, re.I):
         expression, limitCond, topLimit, startLimit, stopLimit = agent.limitCondition(expression, dump)
 
         if limitCond:
@@ -263,10 +262,10 @@ def unionUse(expression, unpack=True, dump=False):
                     stopLimit = int(count)
 
                     infoMsg = "used SQL query returns "
-                    infoMsg += "%d entries" % stopLimit
+                    infoMsg += "%d %s" % (stopLimit, "entries" if stopLimit > 1 else "entry")
                     logger.info(infoMsg)
 
-            elif count and (not isinstance(count, basestring) or not count.isdigit()):
+            elif count and (not isinstance(count, six.string_types) or not count.isdigit()):
                 warnMsg = "it was not possible to count the number "
                 warnMsg += "of entries for the SQL query provided. "
                 warnMsg += "sqlmap will assume that it returns only "
@@ -317,9 +316,8 @@ def unionUse(expression, unpack=True, dump=False):
                         while kb.threadContinue:
                             with kb.locks.limit:
                                 try:
-                                    valueStart = time.time()
                                     threadData.shared.counter += 1
-                                    num = threadData.shared.limits.next()
+                                    num = next(threadData.shared.limits)
                                 except StopIteration:
                                     break
 
@@ -342,7 +340,7 @@ def unionUse(expression, unpack=True, dump=False):
                                         items = parseUnionPage(output)
 
                                         if threadData.shared.showEta:
-                                            threadData.shared.progress.progress(time.time() - valueStart, threadData.shared.counter)
+                                            threadData.shared.progress.progress(threadData.shared.counter)
                                         if isListLike(items):
                                             # in case that we requested N columns and we get M!=N then we have to filter a bit
                                             if len(items) > 1 and len(expressionFieldsList) > 1:
@@ -354,7 +352,7 @@ def unionUse(expression, unpack=True, dump=False):
                                                     key = re.sub(r"[^A-Za-z0-9]", "", item).lower()
                                                     if key not in filtered or re.search(r"[^A-Za-z0-9]", item):
                                                         filtered[key] = item
-                                                items = filtered.values()
+                                                items = list(six.itervalues(filtered))
                                             items = [items]
                                         index = None
                                         for index in xrange(1 + len(threadData.shared.buffered)):
@@ -364,7 +362,7 @@ def unionUse(expression, unpack=True, dump=False):
                                     else:
                                         index = None
                                         if threadData.shared.showEta:
-                                            threadData.shared.progress.progress(time.time() - valueStart, threadData.shared.counter)
+                                            threadData.shared.progress.progress(threadData.shared.counter)
                                         for index in xrange(1 + len(threadData.shared.buffered)):
                                             if index < len(threadData.shared.buffered) and threadData.shared.buffered[index][0] >= num:
                                                 break
@@ -378,8 +376,8 @@ def unionUse(expression, unpack=True, dump=False):
                                             threadData.shared.value.extend(arrayizeValue(_))
                                         del threadData.shared.buffered[0]
 
-                                if conf.verbose == 1 and not (threadData.resumed and kb.suppressResumeInfo) and not threadData.shared.showEta:
-                                    _ = ','.join("\"%s\"" % _ for _ in flattenValue(arrayizeValue(items))) if not isinstance(items, basestring) else items
+                                if conf.verbose == 1 and not (threadData.resumed and kb.suppressResumeInfo) and not threadData.shared.showEta and not kb.bruteMode:
+                                    _ = ','.join("'%s'" % _ for _ in (flattenValue(arrayizeValue(items)) if not isinstance(items, six.string_types) else [items]))
                                     status = "[%s] [INFO] %s: %s" % (time.strftime("%X"), "resumed" if threadData.resumed else "retrieved", _ if kb.safeCharEncode else safecharencode(_))
 
                                     if len(status) > width:
